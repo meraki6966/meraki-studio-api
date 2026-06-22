@@ -20,63 +20,70 @@ export interface GenerationResult {
   duration?: number;
 }
 
+// Replicate output can be a URL string, an array of strings, or a FileOutput
+// object exposing a .url() method (newer client versions). Normalize all shapes.
+function extractUrl(output: unknown): string | null {
+  if (!output) return null;
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) return extractUrl(output[0]);
+  if (typeof output === 'object') {
+    const o = output as { url?: unknown; href?: string };
+    if (typeof o.url === 'function') {
+      try {
+        const u = (o.url as () => unknown)();
+        return typeof u === 'string' ? u : ((u as { href?: string })?.href ?? null);
+      } catch {
+        return null;
+      }
+    }
+    if (typeof o.url === 'string') return o.url;
+    if (typeof o.href === 'string') return o.href;
+  }
+  return null;
+}
+
 // ─── Video Generation ───────────────────────────────────────────────
+// Wan 2.1 text-to-video on both providers (Kling access is restricted).
+// Primary: Replicate (wavespeedai/wan-2.1-t2v-480p). Fallback: fal.ai (fal-ai/wan-t2v).
 
 export async function generateVideo(input: GenerationInput): Promise<GenerationResult> {
-  // Try Replicate first (Kling 2.1)
+  const aspectRatio = input.aspectRatio ?? '16:9';
+  // fal.ai Wan only accepts 9:16 or 16:9; map anything else to 16:9.
+  const falAspect = aspectRatio === '9:16' ? '9:16' : '16:9';
+
+  // Primary: Replicate Wan 2.1 (text-to-video, 480p)
   if (process.env.REPLICATE_API_TOKEN) {
     try {
-      console.log('[generate] Trying Replicate Kling...');
+      console.log('[generate] Trying Replicate Wan 2.1 t2v...');
       const output = await replicate.run(
-        'klingai/kling-video:latest' as `${string}/${string}`,
-        {
-          input: {
-            prompt: input.prompt,
-            duration: input.duration ?? 5,
-            aspect_ratio: input.aspectRatio ?? '16:9',
-            ...(input.imageUrl ? { image_url: input.imageUrl, mode: 'image-to-video' } : { mode: 'text-to-video' }),
-          },
-        }
+        'wavespeedai/wan-2.1-t2v-480p' as `${string}/${string}`,
+        { input: { prompt: input.prompt, aspect_ratio: aspectRatio } }
       );
-const url = Array.isArray(output) ? output[0] : output as unknown as string;
-      if (url && typeof url === 'string') {
-        return { url, provider: 'replicate', duration: input.duration ?? 5 };
-      }
+      const url = extractUrl(output);
+      if (url) return { url, provider: 'replicate', duration: input.duration ?? 5 };
+      console.warn('[generate] Replicate Wan returned no URL, falling back to fal.ai');
     } catch (err) {
-      console.warn('[generate] Replicate failed, falling back to fal.ai:', (err as Error).message);
+      console.warn('[generate] Replicate Wan failed, falling back to fal.ai:', (err as Error).message);
     }
   }
 
-  // Fallback: fal.ai (Kling)
+  // Fallback: fal.ai Wan 2.1 (text-to-video)
   if (process.env.FAL_KEY) {
     try {
-      console.log('[generate] Trying fal.ai Kling...');
-      const result = await fal.subscribe('fal-ai/kling-video/v2/standard/text-to-video', {
+      console.log('[generate] Trying fal.ai Wan 2.1 t2v...');
+      const result = await fal.subscribe('fal-ai/wan-t2v', {
         input: {
           prompt: input.prompt,
-          duration: String(input.duration ?? 5),
-          aspect_ratio: input.aspectRatio ?? '16:9',
+          resolution: '480p',
+          aspect_ratio: falAspect,
         },
-        pollInterval: 3000,
-        timeout: 180000,
-      });
-      const data = result.data as { video?: { url: string }; url?: string };
-      const url = data?.video?.url || data?.url;
-      if (url) return { url, provider: 'fal', duration: input.duration ?? 5 };
-    } catch (err) {
-      console.warn('[generate] fal.ai Kling failed, trying Wan:', (err as Error).message);
-    }
-
-    // Last resort: Wan 2.1 on fal.ai
-    try {
-      const result = await fal.subscribe('fal-ai/wan-ai/wan2.1-t2v-720p', {
-        input: { prompt: input.prompt },
         pollInterval: 3000,
         timeout: 240000,
       });
       const data = result.data as { video?: { url: string }; url?: string };
       const url = data?.video?.url || data?.url;
       if (url) return { url, provider: 'fal', duration: input.duration ?? 5 };
+      throw new Error('fal.ai Wan returned no video URL');
     } catch (err) {
       throw new Error(`All generation providers failed: ${(err as Error).message}`);
     }
@@ -94,8 +101,8 @@ export async function generateImage(prompt: string, width = 1920, height = 1080)
         'black-forest-labs/flux-schnell' as `${string}/${string}`,
         { input: { prompt, width, height, num_outputs: 1 } }
       );
-      const url = Array.isArray(output) ? output[0] : output;
-      if (url && typeof url === 'string') return url;
+      const url = extractUrl(output);
+      if (url) return url;
     } catch (err) {
       console.warn('[generate] Replicate image failed, trying fal.ai:', (err as Error).message);
     }

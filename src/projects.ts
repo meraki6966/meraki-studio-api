@@ -89,10 +89,15 @@ export function addTrack(projectId: string, type: 'video' | 'audio' | 'overlay',
   return track;
 }
 
-export function addAsset(projectId: string, asset: Omit<Asset, 'id' | 'createdAt'>): Asset | null {
+export function addAsset(
+  projectId: string,
+  asset: Omit<Asset, 'id' | 'createdAt'> & { id?: string }
+): Asset | null {
   const project = loadProject(projectId);
   if (!project) return null;
-  const newAsset: Asset = { ...asset, id: uuidv4(), createdAt: new Date().toISOString() };
+  // Honor a caller-provided id so async status updates (processing/ready/error)
+  // can target the same asset. Generate one only when none is supplied.
+  const newAsset: Asset = { ...asset, id: asset.id ?? uuidv4(), createdAt: new Date().toISOString() };
   project.assets.push(newAsset);
   saveProject(project);
   return newAsset;
