@@ -44,7 +44,8 @@ function extractUrl(output: unknown): string | null {
 
 // ─── Video Generation ───────────────────────────────────────────────
 // Wan 2.1 text-to-video on both providers (Kling access is restricted).
-// Primary: Replicate (wavespeedai/wan-2.1-t2v-480p). Fallback: fal.ai (fal-ai/wan-t2v).
+// Primary: Replicate (wan-video/wan-2.1-1.3b — official build; the
+// wavespeedai variant failed at runtime with E002). Fallback: fal.ai (fal-ai/wan-t2v).
 
 export async function generateVideo(input: GenerationInput): Promise<GenerationResult> {
   const aspectRatio = input.aspectRatio ?? '16:9';
@@ -56,7 +57,7 @@ export async function generateVideo(input: GenerationInput): Promise<GenerationR
     try {
       console.log('[generate] Trying Replicate Wan 2.1 t2v...');
       const output = await replicate.run(
-        'wavespeedai/wan-2.1-t2v-480p' as `${string}/${string}`,
+        'wan-video/wan-2.1-1.3b' as `${string}/${string}`,
         { input: { prompt: input.prompt, aspect_ratio: aspectRatio } }
       );
       const url = extractUrl(output);
