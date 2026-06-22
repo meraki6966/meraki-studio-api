@@ -38,7 +38,7 @@ export async function generateVideo(input: GenerationInput): Promise<GenerationR
           },
         }
       );
-      const url = Array.isArray(output) ? output[0] : output as string;
+const url = Array.isArray(output) ? output[0] : output as unknown as string;
       if (url && typeof url === 'string') {
         return { url, provider: 'replicate', duration: input.duration ?? 5 };
       }
