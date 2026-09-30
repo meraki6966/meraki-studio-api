@@ -16,7 +16,7 @@ export interface GenerationInput {
 
 export interface GenerationResult {
   url: string;
-  provider: 'replicate' | 'fal';
+  provider: 'replicate' | 'fal' | 'kling';
   duration?: number;
 }
 
@@ -91,6 +91,69 @@ export async function generateVideo(input: GenerationInput): Promise<GenerationR
   }
 
   throw new Error('No generation API keys configured. Set REPLICATE_API_TOKEN and/or FAL_KEY.');
+}
+
+// ─── Kling Video Generation (fal.ai) ─────────────────────────────────
+// Real Kling, via fal.ai's kling-video v2.6 Pro endpoints (current, not
+// deprecated, as of Sept 2026 — Kling access on Replicate is restricted
+// for this account, so fal.ai is the only viable server-side path).
+// Higher quality and slower/pricier than the Wan 2.1 default in
+// generateVideo(); call this explicitly (provider: 'kling') when a clip
+// needs that quality, especially image-to-video.
+//
+// Note: fal.ai's Kling endpoints cover text-to-video and image-to-video
+// only. Kling's motion-control feature (applying a reference motion clip
+// to a subject) is not exposed through fal.ai's API — it's only
+// available through Kling's own platform/MCP connector directly, not
+// something this backend can call server-side today.
+
+const KLING_T2V_MODEL = 'fal-ai/kling-video/v2.6/pro/text-to-video';
+const KLING_I2V_MODEL = 'fal-ai/kling-video/v2.6/pro/image-to-video';
+
+export async function generateVideoWithKling(input: GenerationInput): Promise<GenerationResult> {
+  if (!process.env.FAL_KEY) {
+    throw new Error('FAL_KEY not configured. Kling video generation runs through fal.ai.');
+  }
+
+  const duration = input.duration && input.duration >= 8 ? '10' : '5'; // Kling only supports 5 or 10
+  const negativePrompt = 'blur, distort, and low quality';
+
+  if (input.imageUrl) {
+    console.log('[generate] Kling image-to-video (fal.ai)...');
+    const result = await fal.subscribe(KLING_I2V_MODEL, {
+      input: {
+        prompt: input.prompt,
+        start_image_url: input.imageUrl,
+        duration,
+        negative_prompt: negativePrompt,
+        generate_audio: true,
+      },
+      pollInterval: 3000,
+      timeout: 300000,
+    });
+    const data = result.data as { video?: { url: string } };
+    const url = data?.video?.url;
+    if (!url) throw new Error('Kling image-to-video returned no video URL');
+    return { url, provider: 'kling', duration: Number(duration) };
+  }
+
+  console.log('[generate] Kling text-to-video (fal.ai)...');
+  const aspectRatio = input.aspectRatio ?? '16:9';
+  const result = await fal.subscribe(KLING_T2V_MODEL, {
+    input: {
+      prompt: input.prompt,
+      duration,
+      aspect_ratio: aspectRatio,
+      negative_prompt: negativePrompt,
+      generate_audio: true,
+    },
+    pollInterval: 3000,
+    timeout: 300000,
+  });
+  const data = result.data as { video?: { url: string } };
+  const url = data?.video?.url;
+  if (!url) throw new Error('Kling text-to-video returned no video URL');
+  return { url, provider: 'kling', duration: Number(duration) };
 }
 
 // ─── Image Generation ───────────────────────────────────────────────

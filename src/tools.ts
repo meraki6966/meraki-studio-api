@@ -6,7 +6,7 @@ import {
   updateClip, removeClip, createRenderJob, updateRenderJob,
   getRenderJob, getRendersDir, getTempDir,
 } from './projects.js';
-import { generateVideo, generateImage, transcribeAudio } from './services/generate.js';
+import { generateVideo, generateVideoWithKling, generateImage, transcribeAudio } from './services/generate.js';
 import { uploadFromUrl, uploadFromPath, generateThumbnailUrl, isConfigured as cloudinaryConfigured } from './services/cloudinary.js';
 import { renderProject, checkFFmpeg } from './services/ffmpeg.js';
 import { generateNarration, isConfigured as elevenLabsConfigured, defaultVoiceId as elevenLabsDefaultVoiceId } from './services/elevenlabs.js';
@@ -54,7 +54,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'generate_video_clip',
-    description: 'Generate a video clip using AI (Replicate Kling + fal.ai fallback). Returns an assetId immediately — use check_asset_status to poll until ready, then add_clip_to_track.',
+    description: 'Generate a video clip using AI. Default provider is Wan 2.1 (Replicate primary, fal.ai fallback) — fast and cheap. Pass provider: "kling" for real Kling v2.6 Pro via fal.ai when a clip needs higher quality, especially image-to-video; slower and pricier. Returns an assetId immediately — use check_asset_status to poll until ready, then add_clip_to_track.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -63,6 +63,7 @@ export const toolDefinitions: ToolDefinition[] = [
         duration: { type: 'number', description: 'Duration in seconds (3-10). Default: 5' },
         aspectRatio: { type: 'string', enum: ['16:9', '9:16', '1:1'], description: 'Aspect ratio. Default: 16:9' },
         imageUrl: { type: 'string', description: 'Optional: source image URL for image-to-video generation' },
+        provider: { type: 'string', enum: ['auto', 'kling'], description: '"auto" (default) = Wan 2.1 Replicate/fal.ai. "kling" = real Kling v2.6 Pro via fal.ai (higher quality, slower, costs more — best for image-to-video). Motion control is not available server-side; that\'s only on Kling\'s own platform.' },
         name: { type: 'string', description: 'Optional label for this clip asset' },
       },
       required: ['projectId', 'prompt'],
@@ -320,12 +321,15 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
         const generationPromise = (async () => {
           try {
             updateAsset(String(args.projectId), assetId, { status: 'processing' });
-            const result = await generateVideo({
+            const generationInput = {
               prompt: String(args.prompt),
               duration: args.duration ? Number(args.duration) : 5,
               aspectRatio: (args.aspectRatio as '16:9' | '9:16' | '1:1') || '16:9',
               imageUrl: args.imageUrl ? String(args.imageUrl) : undefined,
-            });
+            };
+            const result = args.provider === 'kling'
+              ? await generateVideoWithKling(generationInput)
+              : await generateVideo(generationInput);
 
             let finalUrl = result.url;
             let thumbnailUrl: string | undefined;
@@ -681,7 +685,13 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
           },
           generation: {
             available: !!(process.env.REPLICATE_API_TOKEN || process.env.FAL_KEY),
-            strategy: process.env.REPLICATE_API_TOKEN ? 'Replicate primary, fal.ai fallback' : process.env.FAL_KEY ? 'fal.ai only' : 'No generation keys configured',
+            strategy: process.env.REPLICATE_API_TOKEN ? 'Wan 2.1: Replicate primary, fal.ai fallback' : process.env.FAL_KEY ? 'Wan 2.1: fal.ai only' : 'No generation keys configured',
+            kling: {
+              available: !!process.env.FAL_KEY,
+              note: process.env.FAL_KEY
+                ? 'Real Kling v2.6 Pro (fal.ai) available via generate_video_clip provider: "kling" — text-to-video and image-to-video only, no motion control server-side'
+                : 'Set FAL_KEY to enable Kling video generation',
+            },
           },
           projects: { count: listProjects().length },
         });

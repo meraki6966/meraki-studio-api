@@ -38,7 +38,7 @@ export interface Asset {
   duration?: number;
   width?: number;
   height?: number;
-  generatedBy?: 'replicate' | 'fal' | 'upload';
+  generatedBy?: 'replicate' | 'fal' | 'kling' | 'upload';
   prompt?: string;
   status: 'pending' | 'processing' | 'ready' | 'error';
   errorMessage?: string;
