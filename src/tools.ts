@@ -9,6 +9,7 @@ import {
 import { generateVideo, generateImage, transcribeAudio } from './services/generate.js';
 import { uploadFromUrl, uploadFromPath, generateThumbnailUrl, isConfigured as cloudinaryConfigured } from './services/cloudinary.js';
 import { renderProject, checkFFmpeg } from './services/ffmpeg.js';
+import { generateNarration, isConfigured as elevenLabsConfigured, defaultVoiceId as elevenLabsDefaultVoiceId } from './services/elevenlabs.js';
 import { join } from 'path';
 
 // ─── In-progress generation tracking ───────────────────────────────
@@ -198,6 +199,21 @@ export const toolDefinitions: ToolDefinition[] = [
         projectId: { type: 'string' },
       },
       required: ['projectId'],
+    },
+  },
+  {
+    name: 'generate_narration',
+    description: 'Generate voiceover narration from a text script using ElevenLabs. Defaults to Adam\'s own cloned voice unless a different voiceId is given. Returns an assetId immediately — use check_asset_status to poll until ready, then add_clip_to_track onto an audio track.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project ID' },
+        text: { type: 'string', description: 'The script to narrate' },
+        voiceId: { type: 'string', description: 'Optional ElevenLabs voice ID. Defaults to ELEVENLABS_DEFAULT_VOICE_ID (Adam\'s cloned voice) if not given.' },
+        modelId: { type: 'string', description: 'Optional ElevenLabs model ID. Default: eleven_multilingual_v2' },
+        name: { type: 'string', description: 'Optional label for this narration asset' },
+      },
+      required: ['projectId', 'text'],
     },
   },
   {
@@ -411,6 +427,72 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
         return ok({ success: true, assetId, status: 'pending', message: 'Image generation started. Poll with check_asset_status.' });
       }
 
+      case 'generate_narration': {
+        const project = loadProject(String(args.projectId));
+        if (!project) return err(`Project ${args.projectId} not found`);
+        if (!String(args.text || '').trim()) return err('text is required');
+
+        const requestedVoiceId = args.voiceId ? String(args.voiceId) : undefined;
+        if (!requestedVoiceId && !elevenLabsDefaultVoiceId()) {
+          return err('No voiceId provided and ELEVENLABS_DEFAULT_VOICE_ID is not set in Railway env vars.');
+        }
+
+        const assetId = uuidv4();
+        addAsset(String(args.projectId), {
+          id: assetId,
+          type: 'audio',
+          name: String(args.name || String(args.text).slice(0, 60)),
+          url: '',
+          status: 'pending',
+          generatedBy: 'replicate', // no 'elevenlabs' variant in the Asset type yet; narration-specific fields below identify it
+          prompt: String(args.text),
+          createdAt: new Date().toISOString(),
+        } as any);
+
+        const generationPromise = (async () => {
+          try {
+            updateAsset(String(args.projectId), assetId, { status: 'processing' });
+
+            const narration = await generateNarration({
+              text: String(args.text),
+              voiceId: requestedVoiceId,
+              modelId: args.modelId ? String(args.modelId) : undefined,
+            });
+
+            let finalUrl = narration.localPath;
+            let duration: number | undefined;
+
+            if (cloudinaryConfigured()) {
+              const uploaded = await uploadFromPath(narration.localPath, `meraki-studio/${args.projectId}`, 'video'); // Cloudinary stores audio under resource_type 'video'
+              finalUrl = uploaded.url;
+              duration = uploaded.duration;
+            }
+
+            updateAsset(String(args.projectId), assetId, {
+              url: finalUrl,
+              duration,
+              status: 'ready',
+            });
+          } catch (error) {
+            updateAsset(String(args.projectId), assetId, {
+              status: 'error',
+              errorMessage: (error as Error).message,
+            });
+          } finally {
+            pendingGenerations.delete(assetId);
+          }
+        })();
+
+        pendingGenerations.set(assetId, { projectId: String(args.projectId), assetId, promise: generationPromise });
+        return ok({
+          success: true,
+          assetId,
+          status: 'pending',
+          voiceId: requestedVoiceId || elevenLabsDefaultVoiceId(),
+          message: 'Narration generation started. Use check_asset_status to poll until ready, then add_clip_to_track onto an audio track.',
+        });
+      }
+
       case 'check_asset_status': {
         const project = loadProject(String(args.projectId));
         if (!project) return err(`Project ${args.projectId} not found`);
@@ -590,6 +672,13 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
           cloudinary: { configured: cloudinaryConfigured(), note: cloudinaryConfigured() ? 'Assets will be uploaded to Cloudinary' : 'Set CLOUDINARY_* env vars for persistent asset storage' },
           replicate: { configured: !!process.env.REPLICATE_API_TOKEN },
           fal: { configured: !!process.env.FAL_KEY },
+          elevenlabs: {
+            configured: elevenLabsConfigured(),
+            defaultVoiceId: elevenLabsDefaultVoiceId() || null,
+            note: elevenLabsConfigured()
+              ? (elevenLabsDefaultVoiceId() ? 'Narration ready, defaulting to configured voice' : 'API key set but ELEVENLABS_DEFAULT_VOICE_ID missing — voiceId must be passed explicitly')
+              : 'Set ELEVENLABS_API_KEY (and ELEVENLABS_DEFAULT_VOICE_ID) to enable generate_narration',
+          },
           generation: {
             available: !!(process.env.REPLICATE_API_TOKEN || process.env.FAL_KEY),
             strategy: process.env.REPLICATE_API_TOKEN ? 'Replicate primary, fal.ai fallback' : process.env.FAL_KEY ? 'fal.ai only' : 'No generation keys configured',
