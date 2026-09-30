@@ -11,6 +11,7 @@ import { uploadFromUrl, uploadFromPath, generateThumbnailUrl, isConfigured as cl
 import { renderProject, checkFFmpeg } from './services/ffmpeg.js';
 import { generateNarration, isConfigured as elevenLabsConfigured, defaultVoiceId as elevenLabsDefaultVoiceId } from './services/elevenlabs.js';
 import { join } from 'path';
+import * as fsPromises from 'fs/promises';
 
 // ─── In-progress generation tracking ───────────────────────────────
 const pendingGenerations = new Map<string, {
@@ -108,6 +109,21 @@ export const toolDefinitions: ToolDefinition[] = [
         name: { type: 'string', description: 'Display name for this asset' },
       },
       required: ['projectId', 'url', 'type', 'name'],
+    },
+  },
+  {
+    name: 'upload_local_asset',
+    description: 'Import a video, audio, or image asset from base64-encoded file data (for files that only exist locally, not at a public URL). Uploads to Cloudinary and adds it to the project. Keep individual files well under the request body limit (~50MB JSON body, so under ~35MB of raw file data once base64-encoded).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        base64Data: { type: 'string', description: 'Raw file bytes, base64-encoded (no data: URI prefix)' },
+        type: { type: 'string', enum: ['video', 'audio', 'image'] },
+        name: { type: 'string', description: 'Display name for this asset' },
+        extension: { type: 'string', description: 'File extension without the dot, e.g. "mp4". Default: mp4' },
+      },
+      required: ['projectId', 'base64Data', 'type', 'name'],
     },
   },
   {
@@ -543,6 +559,83 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
         } as any);
 
         return ok({ success: true, asset });
+      }
+
+      case 'upload_local_asset': {
+        const project = loadProject(String(args.projectId));
+        if (!project) return err(`Project ${args.projectId} not found`);
+        if (!String(args.base64Data || '').trim()) return err('base64Data is required');
+
+        const type = String(args.type) as 'video' | 'audio' | 'image';
+        const extension = String(args.extension || 'mp4').replace(/^\./, '');
+
+        let buffer: Buffer;
+        try {
+          buffer = Buffer.from(String(args.base64Data), 'base64');
+        } catch (decodeErr) {
+          return err(`Invalid base64Data: ${(decodeErr as Error).message}`);
+        }
+        if (buffer.length === 0) return err('Decoded file is empty — check base64Data was not truncated');
+
+        const assetId = uuidv4();
+        addAsset(String(args.projectId), {
+          id: assetId,
+          type,
+          name: String(args.name),
+          url: '',
+          status: 'pending',
+          generatedBy: 'upload',
+          createdAt: new Date().toISOString(),
+        } as any);
+
+        const generationPromise = (async () => {
+          try {
+            updateAsset(String(args.projectId), assetId, { status: 'processing' });
+
+            const tempDir = getTempDir();
+            await fsPromises.mkdir(tempDir, { recursive: true });
+            const localPath = join(tempDir, `upload-${assetId}.${extension}`);
+            await fsPromises.writeFile(localPath, buffer);
+
+            let finalUrl = localPath;
+            let duration: number | undefined;
+            let width: number | undefined;
+            let height: number | undefined;
+
+            if (cloudinaryConfigured()) {
+              const resourceType = type === 'audio' ? 'video' : type;
+              const uploaded = await uploadFromPath(localPath, `meraki-studio/${args.projectId}`, resourceType as any);
+              finalUrl = uploaded.url;
+              duration = uploaded.duration;
+              width = uploaded.width;
+              height = uploaded.height;
+            }
+
+            updateAsset(String(args.projectId), assetId, {
+              url: finalUrl,
+              duration,
+              width,
+              height,
+              status: 'ready',
+            });
+          } catch (error) {
+            updateAsset(String(args.projectId), assetId, {
+              status: 'error',
+              errorMessage: (error as Error).message,
+            });
+          } finally {
+            pendingGenerations.delete(assetId);
+          }
+        })();
+
+        pendingGenerations.set(assetId, { projectId: String(args.projectId), assetId, promise: generationPromise });
+
+        return ok({
+          success: true,
+          assetId,
+          status: 'pending',
+          message: 'Upload started. Use check_asset_status to poll until ready, then add_clip_to_track.',
+        });
       }
 
       case 'add_clip_to_track': {
