@@ -213,6 +213,7 @@ export const toolDefinitions: ToolDefinition[] = [
         voiceId: { type: 'string', description: 'Optional ElevenLabs voice ID. Defaults to ELEVENLABS_DEFAULT_VOICE_ID (Adam\'s cloned voice) if not given.' },
         modelId: { type: 'string', description: 'Optional ElevenLabs model ID. Default: eleven_multilingual_v2' },
         name: { type: 'string', description: 'Optional label for this narration asset' },
+        speed: { type: 'number', description: 'Optional speech pace, 0.7 (slowest) to 1.2 (fastest). Default: 1.0. Clamped to that range server-side.' },
       },
       required: ['projectId', 'text'],
     },
@@ -461,6 +462,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
               text: String(args.text),
               voiceId: requestedVoiceId,
               modelId: args.modelId ? String(args.modelId) : undefined,
+              speed: args.speed !== undefined ? Number(args.speed) : undefined,
             });
 
             let finalUrl = narration.localPath;

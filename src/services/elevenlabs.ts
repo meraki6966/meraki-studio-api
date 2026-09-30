@@ -14,6 +14,10 @@ export interface NarrationInput {
   text: string;
   voiceId?: string;
   modelId?: string;
+  // ElevenLabs voice_settings.speed: 0.7 (slowest) to 1.2 (fastest), default
+  // 1.0. Values outside that range are rejected by the API, so clamp here
+  // rather than letting a bad caller value fail the whole request.
+  speed?: number;
 }
 
 export interface NarrationResult {
@@ -50,6 +54,16 @@ export async function generateNarration(input: NarrationInput): Promise<Narratio
 
   const modelId = input.modelId || 'eleven_multilingual_v2';
 
+  const body: Record<string, unknown> = {
+    text: input.text,
+    model_id: modelId,
+  };
+
+  if (input.speed !== undefined) {
+    const clampedSpeed = Math.min(1.2, Math.max(0.7, input.speed));
+    body.voice_settings = { speed: clampedSpeed };
+  }
+
   const response = await fetch(`${ELEVENLABS_API_URL}/${voiceId}`, {
     method: 'POST',
     headers: {
@@ -57,10 +71,7 @@ export async function generateNarration(input: NarrationInput): Promise<Narratio
       'Content-Type': 'application/json',
       Accept: 'audio/mpeg',
     },
-    body: JSON.stringify({
-      text: input.text,
-      model_id: modelId,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
