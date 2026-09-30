@@ -122,7 +122,33 @@ export async function renderProject(
     inputs.push('-i', localPath);
     const idx = inputs.filter(x => x === '-i').length - 1;
 
-    const trimFilter = `[${idx}:v]trim=${clip.trimIn}:${clip.trimOut},setpts=PTS-STARTPTS,scale=${project.resolution.width}:${project.resolution.height}:force_original_aspect_ratio=decrease,pad=${project.resolution.width}:${project.resolution.height}:(ow-iw)/2:(oh-ih)/2[v${i}]`;
+    const W = project.resolution.width;
+    const H = project.resolution.height;
+
+    // Speed: setpts divides timestamps, so 2.0 plays twice as fast and
+    // 0.5 at half speed. Previously clip.speed was stored by set_clip_speed
+    // but never applied here, so that tool silently did nothing.
+    const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    const setpts = speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${speed}`;
+
+    // Fit: sources within ~6% of the project aspect ratio (e.g. 832x480 AI
+    // clips in a 16:9 project) are scaled to cover and center-cropped, so
+    // they fill the frame instead of getting thin black pillarbox bars.
+    // Anything further off (vertical phone footage, square images) is
+    // letterboxed so nothing important gets cropped away.
+    const asset = project.assets.find(a => a.id === clip.assetId);
+    const srcW = (asset as any)?.width as number | undefined;
+    const srcH = (asset as any)?.height as number | undefined;
+    const targetAR = W / H;
+    const nearTarget = srcW && srcH ? Math.abs(srcW / srcH - targetAR) / targetAR < 0.06 : false;
+    const fit = nearTarget
+      ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`
+      : `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2`;
+
+    // setsar/fps/format normalize every segment so concat never fails on
+    // mismatched sample aspect ratio or frame rate (screen recordings are
+    // 60fps, AI clips 16fps, the project is usually 30fps).
+    const trimFilter = `[${idx}:v]trim=${clip.trimIn}:${clip.trimOut},${setpts},${fit},setsar=1,fps=${project.fps || 30},format=yuv420p[v${i}]`;
     filterParts.push(trimFilter);
     videoLabels.push(`[v${i}]`);
   }
@@ -149,7 +175,12 @@ export async function renderProject(
       filterParts.push(`[a0]anull[audio_out]`);
     } else {
       const aLabels = sortedAudioClips.map((_, i) => `[a${i}]`).join('');
-      filterParts.push(`${aLabels}amix=inputs=${sortedAudioClips.length}:duration=longest[audio_out]`);
+      // normalize=0: by default amix scales every input by 1/N for as long
+      // as the inputs are "active", and adelay'd clips count as active from
+      // t=0, so five back-to-back narration clips each came out at a fraction
+      // of their real loudness. Timeline clips are placed sequentially, so a
+      // straight sum is what we want.
+      filterParts.push(`${aLabels}amix=inputs=${sortedAudioClips.length}:duration=longest:normalize=0[audio_out]`);
     }
     audioLabel = '[audio_out]';
   }
