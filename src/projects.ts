@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, Track, Asset, Clip, RenderJob } from './types.js';
+import { isProjectId } from './safe.js';
 
 const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), 'data');
 const PROJECTS_DIR = join(DATA_DIR, 'projects');
@@ -28,10 +29,13 @@ export function saveProject(project: Project): void {
     }
   }
   project.duration = maxEnd;
+  if (!isProjectId(project.id)) throw new Error('Refusing to save a project whose id is not a UUID.');
   writeFileSync(join(PROJECTS_DIR, `${project.id}.json`), JSON.stringify(project, null, 2));
 }
 
 export function loadProject(id: string): Project | null {
+  // The id becomes part of a file path, so it must be exactly a project id.
+  if (!isProjectId(id)) return null;
   const path = join(PROJECTS_DIR, `${id}.json`);
   if (!existsSync(path)) return null;
   try { return JSON.parse(readFileSync(path, 'utf-8')); }

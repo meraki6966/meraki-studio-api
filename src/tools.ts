@@ -12,6 +12,7 @@ import { renderProject, checkFFmpeg } from './services/ffmpeg.js';
 import { generateNarration, isConfigured as elevenLabsConfigured, defaultVoiceId as elevenLabsDefaultVoiceId } from './services/elevenlabs.js';
 import { join } from 'path';
 import * as fsPromises from 'fs/promises';
+import { safeExtension, safeOutputName } from './safe.js';
 
 // ─── In-progress generation tracking ───────────────────────────────
 const pendingGenerations = new Map<string, {
@@ -567,7 +568,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
         if (!String(args.base64Data || '').trim()) return err('base64Data is required');
 
         const type = String(args.type) as 'video' | 'audio' | 'image';
-        const extension = String(args.extension || 'mp4').replace(/^\./, '');
+        const extension = safeExtension(args.extension);
 
         let buffer: Buffer;
         try {
@@ -725,7 +726,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
               {
                 quality: job.quality,
                 outputDir: getRendersDir(),
-                outputName: args.outputName ? String(args.outputName) : undefined,
+                outputName: safeOutputName(args.outputName),
               },
               (msg) => console.log(`[render:${job.id}] ${msg}`)
             );
