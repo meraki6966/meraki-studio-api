@@ -16,7 +16,7 @@ export interface GenerationInput {
 
 export interface GenerationResult {
   url: string;
-  provider: 'replicate' | 'fal' | 'kling';
+  provider: 'replicate' | 'fal' | 'kling' | 'seedance';
   duration?: number;
 }
 
@@ -154,6 +154,53 @@ export async function generateVideoWithKling(input: GenerationInput): Promise<Ge
   const url = data?.video?.url;
   if (!url) throw new Error('Kling text-to-video returned no video URL');
   return { url, provider: 'kling', duration: Number(duration) };
+}
+
+// ─── Seedance 2.5 Video Generation (Replicate) ───────────────────────
+// ByteDance Seedance 2.5: 4-30 second clips, native synced audio, image
+// references. Opt-in only (provider: 'seedance'); it is never the default
+// because a 30 second clip costs far more than a Wan 2.1 draft.
+//
+// VERIFY BEFORE FIRST REAL USE: the input field names below (duration,
+// resolution, aspect_ratio, image, generate_audio) are not confirmed against
+// the live schema at https://replicate.com/bytedance/seedance-2.5/api.
+// Check them there. SEEDANCE_MODEL lets you change the slug without a deploy.
+//
+// Cost guards: resolution defaults to 480p, and duration is clamped to
+// SEEDANCE_MAX_SECONDS (default 10) so a typo cannot start a 30s render.
+
+const SEEDANCE_MIN_SECONDS = 4;
+const SEEDANCE_HARD_MAX_SECONDS = 30;
+
+export async function generateVideoWithSeedance(input: GenerationInput): Promise<GenerationResult> {
+  if (!process.env.REPLICATE_API_TOKEN) {
+    throw new Error('REPLICATE_API_TOKEN not configured. Seedance 2.5 runs through Replicate.');
+  }
+
+  const configuredMax = Number(process.env.SEEDANCE_MAX_SECONDS);
+  const maxSeconds = Number.isFinite(configuredMax) && configuredMax >= SEEDANCE_MIN_SECONDS
+    ? Math.min(configuredMax, SEEDANCE_HARD_MAX_SECONDS)
+    : 10;
+  const duration = Math.min(Math.max(Math.round(input.duration ?? 5), SEEDANCE_MIN_SECONDS), maxSeconds);
+
+  const model = (process.env.SEEDANCE_MODEL || 'bytedance/seedance-2.5') as `${string}/${string}`;
+  const resolution = process.env.SEEDANCE_RESOLUTION || '480p';
+  const aspectRatio = input.aspectRatio ?? '16:9';
+
+  const seedanceInput: Record<string, unknown> = {
+    prompt: input.prompt,
+    duration,
+    resolution,
+    aspect_ratio: aspectRatio,
+    generate_audio: true,
+  };
+  if (input.imageUrl) seedanceInput.image = input.imageUrl;
+
+  console.log(`[generate] Seedance 2.5 (${duration}s, ${resolution}, ${aspectRatio}${input.imageUrl ? ', image-to-video' : ''})...`);
+  const output = await replicate.run(model, { input: seedanceInput });
+  const url = extractUrl(output);
+  if (!url) throw new Error('Seedance 2.5 returned no video URL');
+  return { url, provider: 'seedance', duration };
 }
 
 // ─── Image Generation ───────────────────────────────────────────────
