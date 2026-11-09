@@ -6,7 +6,7 @@ import {
   updateClip, removeClip, createRenderJob, updateRenderJob,
   getRenderJob, getRendersDir, getTempDir,
 } from './projects.js';
-import { generateVideo, generateVideoWithKling, generateImage, transcribeAudio } from './services/generate.js';
+import { generateVideo, generateVideoWithKling, generateVideoWithSeedance, generateImage, transcribeAudio } from './services/generate.js';
 import { uploadFromUrl, uploadFromPath, generateThumbnailUrl, isConfigured as cloudinaryConfigured } from './services/cloudinary.js';
 import { renderProject, checkFFmpeg } from './services/ffmpeg.js';
 import { generateNarration, isConfigured as elevenLabsConfigured, defaultVoiceId as elevenLabsDefaultVoiceId } from './services/elevenlabs.js';
@@ -65,7 +65,7 @@ export const toolDefinitions: ToolDefinition[] = [
         duration: { type: 'number', description: 'Duration in seconds (3-10). Default: 5' },
         aspectRatio: { type: 'string', enum: ['16:9', '9:16', '1:1'], description: 'Aspect ratio. Default: 16:9' },
         imageUrl: { type: 'string', description: 'Optional: source image URL for image-to-video generation' },
-        provider: { type: 'string', enum: ['auto', 'kling'], description: '"auto" (default) = Wan 2.1 Replicate/fal.ai. "kling" = real Kling v2.6 Pro via fal.ai (higher quality, slower, costs more — best for image-to-video). Motion control is not available server-side; that\'s only on Kling\'s own platform.' },
+        provider: { type: 'string', enum: ['auto', 'kling', 'seedance'], description: '"auto" (default) = Wan 2.1 Replicate/fal.ai. "kling" = real Kling v2.6 Pro via fal.ai (higher quality, slower, costs more — best for image-to-video). "seedance" = ByteDance Seedance 2.5 via Replicate (4-30s clips with native audio; 480p by default and duration capped by SEEDANCE_MAX_SECONDS, so it costs more than Wan). Motion control is not available server-side; that\'s only on Kling\'s own platform.' },
         name: { type: 'string', description: 'Optional label for this clip asset' },
       },
       required: ['projectId', 'prompt'],
@@ -347,7 +347,9 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
             };
             const result = args.provider === 'kling'
               ? await generateVideoWithKling(generationInput)
-              : await generateVideo(generationInput);
+              : args.provider === 'seedance'
+                ? await generateVideoWithSeedance(generationInput)
+                : await generateVideo(generationInput);
 
             let finalUrl = result.url;
             let thumbnailUrl: string | undefined;
@@ -782,6 +784,12 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
           generation: {
             available: !!(process.env.REPLICATE_API_TOKEN || process.env.FAL_KEY),
             strategy: process.env.REPLICATE_API_TOKEN ? 'Wan 2.1: Replicate primary, fal.ai fallback' : process.env.FAL_KEY ? 'Wan 2.1: fal.ai only' : 'No generation keys configured',
+            seedance: {
+              available: !!process.env.REPLICATE_API_TOKEN,
+              note: process.env.REPLICATE_API_TOKEN
+                ? 'Seedance 2.5 (Replicate) available via generate_video_clip provider: "seedance" — opt-in, resolution and max duration capped by SEEDANCE_RESOLUTION and SEEDANCE_MAX_SECONDS'
+                : 'Set REPLICATE_API_TOKEN to enable Seedance 2.5',
+            },
             kling: {
               available: !!process.env.FAL_KEY,
               note: process.env.FAL_KEY
